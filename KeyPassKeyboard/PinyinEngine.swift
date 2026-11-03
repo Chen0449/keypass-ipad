@@ -16,6 +16,8 @@ final class PinyinEngine {
 
     private var rows: [Row] = []
     private var syllables: Set<String> = []
+    /// 简拼索引：首字母串 → "词,词,词"（只收 2~3 音节的词，控制内存）
+    private var initialsIndex: [String: String] = [:]
     private var loaded = false
     private let loadLock = NSLock()
 
@@ -36,7 +38,7 @@ final class PinyinEngine {
         }
 
         var parsed: [Row] = []
-        parsed.reserveCapacity(21000)
+        parsed.reserveCapacity(36000)
         var syllableSet = Set<String>()
 
         for line in text.split(separator: "\n") {
@@ -52,6 +54,37 @@ final class PinyinEngine {
 
         rows = parsed
         syllables = syllableSet
+
+        // 简拼索引单独一个文件（按词频排过序，避免字母序靠前的生僻词抢位）
+        if let shortURL = Bundle.main.url(forResource: "pinyin_short", withExtension: "txt"),
+           let shortText = try? String(contentsOf: shortURL, encoding: .utf8) {
+            var table: [String: String] = [:]
+            table.reserveCapacity(8000)
+            for line in shortText.split(separator: "\n") {
+                guard let barIndex = line.firstIndex(of: "|") else { continue }
+                let abbr = String(line[line.startIndex..<barIndex]).lowercased()
+                let value = String(line[line.index(after: barIndex)...])
+                guard !abbr.isEmpty, !value.isEmpty else { continue }
+                table[abbr] = value
+            }
+            initialsIndex = table
+        }
+    }
+
+    /// 简拼候选："nh" → 你好 / 你会 …
+    func shortCandidates(for input: String, limit: Int = 8) -> [String] {
+        loadIfNeeded()
+        guard input.count >= 2, input.allSatisfy({ $0.isASCII && $0.isLetter }) else { return [] }
+        guard let raw = initialsIndex[input.lowercased()] else { return [] }
+
+        var out: [String] = []
+        var seen = Set<String>()
+        for word in raw.split(separator: ",") {
+            let text = String(word)
+            if seen.insert(text).inserted { out.append(text) }
+            if out.count >= limit { break }
+        }
+        return out
     }
 
     // MARK: - 切音节
@@ -84,32 +117,44 @@ final class PinyinEngine {
 
     // MARK: - 候选词
 
-    /// 依输入串给出候选词，最多 `limit` 个。拼音不完整时返回空。
+    /// 依输入串给出候选词，最多 `limit` 个。全拼优先，全拼不通时退回简拼。
     func candidates(for input: String, limit: Int = 24) -> [String] {
         loadIfNeeded()
         guard !input.isEmpty,
               input.allSatisfy({ $0.isASCII && $0.isLetter }) else { return [] }
-        guard let parts = split(input) else { return [] }
-
-        let key = parts.joined(separator: " ").uppercased()
-        guard let start = lowerBound(of: key) else { return [] }
 
         var collected: [String] = []
         var seen = Set<String>()
 
-        var index = start
-        while index < rows.count, collected.count < limit {
-            let row = rows[index]
-            guard row.key == key || row.key.hasPrefix(key + " ") else { break }
-            for word in row.value.split(separator: ",") {
-                let text = String(word)
-                if seen.insert(text).inserted {
-                    collected.append(text)
+        if let parts = split(input) {
+            let key = parts.joined(separator: " ").uppercased()
+            if let start = lowerBound(of: key) {
+                var index = start
+                while index < rows.count, collected.count < limit {
+                    let row = rows[index]
+                    guard row.key == key || row.key.hasPrefix(key + " ") else { break }
+                    for word in row.value.split(separator: ",") {
+                        let text = String(word)
+                        if seen.insert(text).inserted {
+                            collected.append(text)
+                        }
+                        if collected.count >= limit { break }
+                    }
+                    index += 1
                 }
-                if collected.count >= limit { break }
             }
-            index += 1
         }
+
+        // 简拼兜底（"nh" → 你好）；全拼已经出词时只补到 limit
+        if collected.count < 8 {
+            for word in shortCandidates(for: input, limit: limit) {
+                guard collected.count < limit else { break }
+                if seen.insert(word).inserted {
+                    collected.append(word)
+                }
+            }
+        }
+
         return collected
     }
 

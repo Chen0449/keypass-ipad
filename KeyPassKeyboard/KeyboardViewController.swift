@@ -433,18 +433,23 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 中文输入
 
+    private func currentCandidates() -> [String] {
+        guard chineseMode, !composer.isEmpty else { return [] }
+        let base = pinyin.candidates(for: composer)
+        return LearningStore.shared.rerank(base, for: composer)
+    }
+
     private func refreshCandidates() {
-        if chineseMode, !composer.isEmpty {
-            candidateBar.update(pinyin.candidates(for: composer))
-        } else {
-            candidateBar.update([])
-        }
+        candidateBar.update(currentCandidates())
         candidateBar.isHidden = !showsCandidates
         applyLayout(animated: false)
     }
 
     private func commit(_ word: String) {
         guard !word.isEmpty else { return }
+        if !composer.isEmpty {
+            LearningStore.shared.record(composer: composer, word: word)
+        }
         type(word)
         composer = ""
         candidateBar.update([])
@@ -453,7 +458,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func commitCurrent() {
-        if let word = pinyin.firstCandidate(for: composer) {
+        if let word = currentCandidates().first {
             commit(word)
             return
         }
