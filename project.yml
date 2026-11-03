@@ -1,0 +1,109 @@
+name: KeyPass
+options:
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    ENABLE_BITCODE: "NO"
+    # Info.plist 全部由本文件的 info.properties 生成，不让 Xcode 再合成一份去合并
+    GENERATE_INFOPLIST_FILE: "NO"
+
+targets:
+
+  KeyPassHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: KeyPassHost
+    info:
+      path: KeyPassHost/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: $(DEVELOPMENT_LANGUAGE)
+        CFBundleDisplayName: 密码键盘
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yg.keypass
+        PRODUCT_NAME: KeyPassHost
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - target: KeyPassKeyboard
+        embed: true
+
+  KeyPassKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: KeyPassKeyboard
+      - path: Shared
+    info:
+      path: KeyPassKeyboard/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: $(DEVELOPMENT_LANGUAGE)
+        CFBundleDisplayName: 密码键盘
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: "XPC!"
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            IsASCIICapable: true
+            PrefersRightToLeft: false
+            # 本键盘是英文布局，因此取 en-US。注意 PrimaryLanguage 不能留空（会让键盘弹起时崩宿主）；
+            # zh-Hans 历史上被报告过在「英文系统 / 听写语言未启用」的设备上取不到听写元数据而崩宿主
+            # （jev-chat 键盘 2026-09-23 真机实证）。这条是特定配置下的系统故障，不是普遍规律：
+            # azooKey 就用 ja-JP 跑得很好。改之前先真机验证，别只按注释改。
+            PrimaryLanguage: en-US
+            RequestsOpenAccess: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yg.keypass.keyboard
+        PRODUCT_NAME: KeyPassKeyboard
+        PRODUCT_MODULE_NAME: KeyPassKeyboard
+        TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        SKIP_INSTALL: "YES"
+
+schemes:
+  KeyPassHost:
+    build:
+      targets:
+        KeyPassHost: all
+        KeyPassKeyboard: all
+    run:
+      config: Debug
+    archive:
+      config: Release
