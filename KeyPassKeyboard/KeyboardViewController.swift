@@ -98,6 +98,11 @@ final class KeyboardViewController: UIInputViewController {
         // 先恢复上次的页面，再应用布局 —— 顺序反了会把刚恢复的页面覆盖成「打字页」
         restoreState()
         applyPage()
+
+        // 后台把拼音词库读进内存，别让第一次按字母卡顿
+        DispatchQueue.global(qos: .userInitiated).async {
+            PinyinEngine.shared.warmUp()
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {

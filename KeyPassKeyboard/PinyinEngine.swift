@@ -17,8 +17,16 @@ final class PinyinEngine {
     private var rows: [Row] = []
     private var syllables: Set<String> = []
     private var loaded = false
+    private let loadLock = NSLock()
+
+    /// 后台预热：658 KB→1.1 MB 的词库解析约 100~200 ms，别卡在第一次按键上
+    func warmUp() {
+        loadIfNeeded()
+    }
 
     private func loadIfNeeded() {
+        loadLock.lock()
+        defer { loadLock.unlock() }
         guard !loaded else { return }
         loaded = true
 
