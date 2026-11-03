@@ -47,7 +47,19 @@ final class KeyboardViewController: UIInputViewController {
 
     private var heightConstraint: NSLayoutConstraint!
     private var planeHeightConstraint: NSLayoutConstraint!
+    /// 打字页专用：把面板顶到 view 顶部，让它在系统给多高时都铺满（避免顶部露出一大块空白）
+    private var planeTopConstraint: NSLayoutConstraint!
     private var titleRestoreWorkItem: DispatchWorkItem?
+
+    /// 临时诊断用：打字页左上角显示实测尺寸，量准了就把这块删掉
+    private let sizeLabel = UILabel()
+
+    // 切到系统键盘（打中文）时扩展会被系统卸载，回来要能接着刚才的页面和草稿
+    private enum PersistKey {
+        static let page = "kp.page"
+        static let draft = "kp.draft"
+        static let editing = "kp.editing"
+    }
 
     // MARK: - 生命周期
 
@@ -70,6 +82,7 @@ final class KeyboardViewController: UIInputViewController {
 
         applyPage(animated: false)
         updateHeight(animated: false)
+        restoreState()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -80,6 +93,51 @@ final class KeyboardViewController: UIInputViewController {
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
         updateHeight(animated: false)
+        sizeLabel.text = "\(Int(view.bounds.width))×\(Int(view.bounds.height)) 面板\(Int(planeView.bounds.height))"
+    }
+
+    // MARK: - 页面 / 草稿 的续接（切到系统键盘再切回来不丢东西）
+
+    private func saveState() {
+        let defaults = UserDefaults.standard
+        switch page {
+        case .keys:
+            defaults.set("keys", forKey: PersistKey.page)
+            defaults.removeObject(forKey: PersistKey.draft)
+            defaults.removeObject(forKey: PersistKey.editing)
+        case .vault:
+            defaults.set("vault", forKey: PersistKey.page)
+            defaults.removeObject(forKey: PersistKey.draft)
+            defaults.removeObject(forKey: PersistKey.editing)
+        case .editor:
+            defaults.set("editor", forKey: PersistKey.page)
+            if let data = try? JSONEncoder().encode(editorView.currentDraft()) {
+                defaults.set(data, forKey: PersistKey.draft)
+            }
+            defaults.set(editingID?.uuidString, forKey: PersistKey.editing)
+        }
+    }
+
+    private func restoreState() {
+        let defaults = UserDefaults.standard
+        let saved = defaults.string(forKey: PersistKey.page) ?? "keys"
+
+        if saved == "editor",
+           let data = defaults.data(forKey: PersistKey.draft),
+           let draft = try? JSONDecoder().decode(Credential.self, from: data) {
+            if let raw = defaults.string(forKey: PersistKey.editing), let id = UUID(uuidString: raw) {
+                editingID = id
+                editorTitleLabel.text = "编辑条目"
+            } else {
+                editingID = nil
+                editorTitleLabel.text = "新建条目"
+            }
+            editorView.load(draft)
+            page = .editor
+        } else if saved == "vault" {
+            reloadVault()
+            page = .vault
+        }
     }
 
     // MARK: - 高度
@@ -130,6 +188,8 @@ final class KeyboardViewController: UIInputViewController {
         heightConstraint.priority = UILayoutPriority(999)
         planeHeightConstraint = planeView.heightAnchor.constraint(equalToConstant: 268)
         planeHeightConstraint.priority = UILayoutPriority(999)
+        planeTopConstraint = planeView.topAnchor.constraint(equalTo: view.topAnchor)
+        planeTopConstraint.priority = UILayoutPriority(998)
 
         NSLayoutConstraint.activate([
             heightConstraint,
@@ -155,6 +215,17 @@ final class KeyboardViewController: UIInputViewController {
                 container.bottomAnchor.constraint(equalTo: pageHost.bottomAnchor)
             ])
         }
+
+        // 临时诊断标签（量准尺寸后删除）
+        sizeLabel.font = .systemFont(ofSize: 9)
+        sizeLabel.textColor = UIColor.secondaryLabel.withAlphaComponent(0.75)
+        sizeLabel.isUserInteractionEnabled = false
+        sizeLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(sizeLabel)
+        NSLayoutConstraint.activate([
+            sizeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
+            sizeLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 2)
+        ])
 
         // 密码库页：顶栏 + 列表
         let backButton = makeBarButton(title: "⌨︎", action: #selector(backToKeys))
@@ -363,10 +434,17 @@ final class KeyboardViewController: UIInputViewController {
         vaultContainer.isHidden = page != .vault
         editorContainer.isHidden = page != .editor
 
+        // 打字页：面板顶到顶部铺满整块输入视图（系统给多高就吃多高，
+        // 否则 iPad 上系统给的高度比我们请求的大，顶上会露出一条空白背景）
+        let fillPlane = page == .keys
+        planeTopConstraint.isActive = fillPlane
+        planeHeightConstraint.isActive = !fillPlane
+
         if page != .vault {
             planeView.render(page: planePage, shift: shiftOn)
         }
         updateHeight(animated: animated)
+        saveState()
     }
 
     private func reloadVault() {
@@ -419,6 +497,11 @@ final class KeyboardViewController: UIInputViewController {
                 reloadVault()
                 page = .vault
             }
+        }
+
+        // 编辑页每敲一下就把草稿存起来：切到系统键盘打中文时扩展会被卸载，回来能接着编辑
+        if page == .editor {
+            saveState()
         }
     }
 

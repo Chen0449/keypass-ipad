@@ -133,7 +133,8 @@ enum KeyboardLayouts {
             KeyDef(title: switchTitle, weight: 1.3, style: .special, action: switchAction),
             KeyDef(title: "🔑 密码库", weight: 2.1, style: .accent, action: .toggleVault),
             KeyDef(title: "空格", weight: 4.0, style: .normal, action: .space),
-            KeyDef(title: "🌐", weight: 1.2, style: .special, action: .nextInputMode),
+            // 明确写「中/英」而不是 🌐 图标：点一下切到系统键盘（系统中文拼音），再点切回来
+            KeyDef(title: "中/英", weight: 1.5, style: .special, action: .nextInputMode),
             KeyDef(title: "换行", weight: 1.7, style: .special, action: .newline)
         ]
     }

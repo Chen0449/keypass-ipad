@@ -24,6 +24,7 @@ struct HostRootView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header
                     stepList
+                    HostVaultEditor()
                     limitCard
                     backupCard
                     settingsButton

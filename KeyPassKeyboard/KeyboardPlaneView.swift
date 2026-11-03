@@ -58,15 +58,17 @@ final class KeyboardPlaneView: UIView {
         guard !rows.isEmpty, rows.count == buttons.count else { return }
 
         let padX: CGFloat = 6
-        let padY: CGFloat = 6
+        // 底部要给 iPad 的手势条留位置，否则最后一行按键会被压到屏幕边缘外
+        let padTop: CGFloat = 6
+        let padBottom: CGFloat = 6 + max(safeAreaInsets.bottom, 0)
         let gapX: CGFloat = 6
         let gapY: CGFloat = 8
 
         let rowCount = CGFloat(rows.count)
-        let availableHeight = bounds.height - padY * 2 - gapY * max(0, rowCount - 1)
+        let availableHeight = bounds.height - padTop - padBottom - gapY * max(0, rowCount - 1)
         let rowHeight = max(26, availableHeight / max(1, rowCount))
 
-        var y = padY
+        var y = padTop
         for (rowIndex, row) in rows.enumerated() {
             let rowButtons = buttons[rowIndex]
             guard rowButtons.count == row.keys.count else { continue }

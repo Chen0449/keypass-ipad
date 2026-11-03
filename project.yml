@@ -25,6 +25,7 @@ targets:
     platform: iOS
     sources:
       - path: KeyPassHost
+      - path: Shared/Credential.swift
     info:
       path: KeyPassHost/Info.plist
       properties:

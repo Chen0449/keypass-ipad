@@ -12,6 +12,15 @@
 
 ---
 
+> ✅ **构建状态（2026-11-04）**：GitHub Actions 真机工具链编译**已通过**（Xcode 15.4，0 warning，`** BUILD SUCCEEDED **`）。
+> 未签名 IPA 在 `out/KeyPass-unsigned.ipa`（119.8 KB），仓库：<https://github.com/Chen0449/keypass-ipad>
+>
+> 产物已验：`Payload/KeyPassHost.app` + `PlugIns/KeyPassKeyboard.appex`，两个可执行文件都在；
+> appex 的 Info.plist 里 `com.apple.keyboard-service` / `KeyPassKeyboard.KeyboardViewController` / `en-US` /
+> `com.yg.keypass.keyboard` / `RequestsOpenAccess` 全部在位。**运行时行为仍未验证**（只有装到 iPad 上才知道）。
+
+---
+
 ## 1. 目录结构
 
 ```
@@ -124,6 +133,11 @@ Payload/KeyPassHost.app/PlugIns/KeyPassKeyboard.appex/KeyPassKeyboard   ← 这�
 
 ---
 
+| CI 报 `future Xcode project file format (77)` | 新版 xcodegen 写的是 Xcode 16 工程格式（objectVersion 77），`macos-14` 上的 Xcode 15.4 读不了。现在用 `sed` 把 77 降到 56 绕过；换 `runs-on: macos-15`（自带 Xcode 16）就不需要降级，但实测排队很久 |
+| CI 一直 `queued` 不动 | 先看是不是一次 push 触发了 N 个 run（每文件一次 commit 就是 N 次）。已改成 `workflow_dispatch` 手动触发 + 单次 commit 上传；再不动就是 macOS runner 公共排队 |
+
+---
+
 ## 8. 排错
 
 | 现象 | 原因 / 处理 |
@@ -134,9 +148,9 @@ Payload/KeyPassHost.app/PlugIns/KeyPassKeyboard.appex/KeyPassKeyboard   ← 这�
 | 设置里找不到「密码键盘」 | 装完没启动过宿主 App；或 IPA 里的 appex 没被签名（见第 3 节自查） |
 | 键盘能出来但列表永远是空 | 正常：条目要自己在键盘里「＋」新建；导入请看「⋯」菜单 |
 | 点「导出到剪贴板」没反应 | 没开「允许完全访问」 |
-| 键盘高度怪 / 被压扁 | 改 `KeyboardViewController.targetHeight` 里的数字（键位页 336/268 是 iPad/iPhone）。**下限别低于 210pt**：系统键盘最小高度约 204pt，请求更低会露出系统底衬，顶上多一道灰带 |
+| 键盘高度怪 / 被压扁 | 改 `KeyboardViewController.metrics` 里的数字（键位页 336/268 是 iPad/iPhone）。**下限别低于 210pt**：系统键盘最小高度约 204pt，请求更低会露出系统底衬，顶上多一道灰带 |
 | 顶上出现一条灰带 / 键盘比容器矮 | 系统容器可能比我们的 view 高。参照 jev-chat 的兜底做法：等 frame 铺开后再量容器高度补高。**量之前必须 `view.bounds.height < 600` 守卫** —— 刚出现时 frame 是整屏尺寸（如 390×844），拿它算会得 0 并且永远不再量 |
-| 键盘一弹起来宿主 App 就崩 | 查 `PrimaryLanguage`：必须是 `en-US`。缺失会崩；写成 `zh-Hans` 在英文系统/听写语言未启用时也崩（真机实证）。见 `project.yml` 里的注释 |
+| 键盘一弹起来宿主 App 就崩 | 查 `PrimaryLanguage`：取 `en-US`。留空会崩；`zh-Hans` 在英文系统/听写语言未启用时也崩（参考实现真机实证）。见 `project.yml` 里的注释 |
 | 想换 bundle id | 改 `project.yml` 里两处 `PRODUCT_BUNDLE_IDENTIFIER`，**扩展的 id 必须以主 App 的 id 开头**（如 `com.yg.keypass` + `com.yg.keypass.keyboard`） |
 | 想改名字/图标 | `project.yml` 里的 `CFBundleDisplayName`；图标需要另加 `Assets.xcassets` |
 
