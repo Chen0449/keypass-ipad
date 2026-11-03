@@ -56,15 +56,18 @@ final class CandidateBarView: UIView {
 
         for (index, word) in newWords.enumerated() {
             let button = UIButton(type: .system)
-            button.setTitle(word, for: .normal)
-            button.setTitleColor(.label, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 16, weight: index == 0 ? .semibold : .regular)
+            var configuration = UIButton.Configuration.plain()
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
+            var container = AttributeContainer()
+            container.font = UIFont.systemFont(ofSize: 16, weight: index == 0 ? .semibold : .regular)
+            configuration.attributedTitle = AttributedString(word, attributes: container)
+            button.configuration = configuration
+            button.tintColor = .label
             button.backgroundColor = UIColor { traits in
                 traits.userInterfaceStyle == .dark
                     ? UIColor(white: 0.30, alpha: 1)
                     : UIColor.white
             }
-            button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
             button.layer.cornerRadius = 6
             button.layer.cornerCurve = .continuous
             button.addAction(UIAction { [weak self] _ in
