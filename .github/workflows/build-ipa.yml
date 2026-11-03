@@ -1,8 +1,7 @@
 name: build-unsigned-ipa
 
 on:
-  push:
-    branches: [ main, master ]
+  # 只留手动 / API 触发：之前是每文件一次 commit，一个 push 触发 18 次构建，全卡在队列里
   workflow_dispatch:
 
 jobs:

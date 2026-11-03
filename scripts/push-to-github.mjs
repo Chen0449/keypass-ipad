@@ -1,4 +1,5 @@
-// 用 GitHub REST API 建仓 + 传文件 + 盯 Actions + 拉产物。
+// 用 GitHub REST API 建仓 + 单次提交上传全部文件 + 手动触发 Actions + 盯构建 + 拉产物。
+//
 // 用法：
 //   node push-to-github.mjs setup   D:\dsh\02-临时\gh-token.txt
 //   node push-to-github.mjs watch   D:\dsh\02-临时\gh-token.txt
@@ -11,7 +12,8 @@ import path from "node:path";
 const ROOT = "D:\\dsh\\00-项目\\keypass-ipad";
 const REPO = "keypass-ipad";
 const BRANCH = "main";
-const SKIP_DIRS = new Set([".git", "build", "out", "node_modules", ".github-out"]);
+const WORKFLOW = "build-ipa.yml";
+const SKIP_DIRS = new Set([".git", "build", "out", "node_modules"]);
 
 const [, , command, tokenFile] = process.argv;
 if (!command || !tokenFile) {
@@ -65,7 +67,7 @@ async function whoami() {
 async function ensureRepo(login) {
   const exists = await api("GET", `/repos/${login}/${REPO}`);
   if (exists.ok) {
-    console.log(`仓库已存在: ${exists.json.html_url}  (public=${!exists.json.private})`);
+    console.log(`仓库已存在: ${exists.json.html_url}  public=${!exists.json.private}`);
     return exists.json;
   }
   const created = await api("POST", "/user/repos", {
@@ -77,38 +79,74 @@ async function ensureRepo(login) {
     auto_init: false
   });
   if (!created.ok) throw new Error(`建仓失败 HTTP ${created.status}: ${created.text.slice(0, 300)}`);
-  console.log(`建仓成功: ${created.json.html_url}  (public 仓库的 macOS runner 不花额度)`);
+  console.log(`建仓成功: ${created.json.html_url}（public 仓库的 macOS runner 不花额度）`);
   return created.json;
 }
 
-async function uploadAll(login) {
+/// 用 Git Data API 做**单次提交**：19 个 blob → 1 棵树 → 1 个 commit → 移动分支。
+/// 之前是每个文件一个 commit，结果一个 push 触发 18 次工作流，全在排队。
+async function commitAll(login) {
   const files = walk(ROOT);
-  console.log(`准备上传 ${files.length} 个文件…`);
-  let lastSha = null;
+  console.log(`准备提交 ${files.length} 个文件（单次 commit）…`);
+
+  const refRes = await api("GET", `/repos/${login}/${REPO}/git/ref/heads/${BRANCH}`);
+  let parentSha = null;
+  let baseTree = null;
+  if (refRes.ok) {
+    parentSha = refRes.json.object.sha;
+    const commitRes = await api("GET", `/repos/${login}/${REPO}/git/commits/${parentSha}`);
+    if (commitRes.ok) baseTree = commitRes.json.tree.sha;
+  }
+
+  const treeItems = [];
   let index = 0;
   for (const abs of files) {
     const rel = path.relative(ROOT, abs).split(path.sep).join("/");
-    const encoded = rel.split("/").map(encodeURIComponent).join("/");
-    const content = fs.readFileSync(abs).toString("base64");
-
-    const head = await api("GET", `/repos/${login}/${REPO}/contents/${encoded}?ref=${BRANCH}`);
-    const sha = head.ok ? head.json.sha : undefined;
-    const body = { message: `add ${rel}`, content, branch: BRANCH };
-    if (sha) { body.message = `update ${rel}`; body.sha = sha; }
-
-    const put = await api("PUT", `/repos/${login}/${REPO}/contents/${encoded}`, body);
-    if (!put.ok) {
-      const hint = put.status === 403 && /workflow/i.test(put.text)
-        ? "  ← 令牌缺 workflow 权限（.github/workflows 下的文件需要它）"
-        : "";
-      throw new Error(`上传 ${rel} 失败 HTTP ${put.status}: ${put.text.slice(0, 200)}${hint}`);
-    }
-    lastSha = put.json.commit.sha;
+    const blob = await api("POST", `/repos/${login}/${REPO}/git/blobs`, {
+      content: fs.readFileSync(abs).toString("base64"),
+      encoding: "base64"
+    });
+    if (!blob.ok) throw new Error(`上传 blob 失败 ${rel} HTTP ${blob.status}: ${blob.text.slice(0, 160)}`);
+    treeItems.push({ path: rel, mode: "100644", type: "blob", sha: blob.json.sha });
     index += 1;
     process.stdout.write(`\r  已上传 ${index}/${files.length}  `);
   }
-  console.log(`\n全部上传完成，HEAD = ${lastSha?.slice(0, 8)}`);
-  return lastSha;
+  console.log("");
+
+  const treeBody = { tree: treeItems };
+  if (baseTree) treeBody.base_tree = baseTree;
+  const tree = await api("POST", `/repos/${login}/${REPO}/git/trees`, treeBody);
+  if (!tree.ok) throw new Error(`建树失败 HTTP ${tree.status}: ${tree.text.slice(0, 200)}`);
+
+  const commitBody = { message: "同步源码与构建配置", tree: tree.json.sha };
+  if (parentSha) commitBody.parents = [parentSha];
+  const commit = await api("POST", `/repos/${login}/${REPO}/git/commits`, commitBody);
+  if (!commit.ok) {
+    const hint = /workflow/i.test(commit.text) ? "  ← 令牌缺 workflow 权限" : "";
+    throw new Error(`建 commit 失败 HTTP ${commit.status}: ${commit.text.slice(0, 200)}${hint}`);
+  }
+
+  if (parentSha) {
+    const upd = await api("PATCH", `/repos/${login}/${REPO}/git/refs/heads/${BRANCH}`, { sha: commit.json.sha });
+    if (!upd.ok) throw new Error(`移动分支失败 HTTP ${upd.status}: ${upd.text.slice(0, 200)}`);
+  } else {
+    const cr = await api("POST", `/repos/${login}/${REPO}/git/refs`, {
+      ref: `refs/heads/${BRANCH}`,
+      sha: commit.json.sha
+    });
+    if (!cr.ok) throw new Error(`建分支失败 HTTP ${cr.status}: ${cr.text.slice(0, 200)}`);
+  }
+
+  console.log(`提交完成: ${commit.json.sha.slice(0, 8)}`);
+  return commit.json.sha;
+}
+
+async function dispatch(login) {
+  const res = await api("POST", `/repos/${login}/${REPO}/actions/workflows/${WORKFLOW}/dispatches`, {
+    ref: BRANCH
+  });
+  if (!res.ok) throw new Error(`触发工作流失败 HTTP ${res.status}: ${res.text.slice(0, 200)}`);
+  console.log("已触发 workflow_dispatch");
 }
 
 async function findRun(login, sha) {
@@ -124,7 +162,7 @@ async function watch(login, sha) {
     const run = await findRun(login, sha);
     if (run) {
       const elapsed = Math.round((Date.now() - started) / 1000);
-      process.stdout.write(`\r  [${elapsed}s] ${run.name} · ${run.status}/${run.conclusion ?? "-"}  `);
+      process.stdout.write(`\r  [${elapsed}s] ${run.name} · ${run.status}/${run.conclusion ?? "-"}   `);
       if (run.status === "completed") {
         console.log(`\n构建结束: ${run.conclusion}`);
         console.log(`  ${run.html_url}`);
@@ -140,8 +178,8 @@ async function watch(login, sha) {
         return run;
       }
     }
-    if (Date.now() - started > 20 * 60 * 1000) {
-      console.log("\n等了 20 分钟还没结束，先停。稍后用 watch 再看。");
+    if (Date.now() - started > 25 * 60 * 1000) {
+      console.log("\n等了 25 分钟还没结束，先停。稍后用 watch 再看。");
       return null;
     }
     await new Promise((r) => setTimeout(r, 10000));
@@ -160,6 +198,7 @@ async function getArtifacts(login, runId) {
       headers, redirect: "manual"
     });
     const location = meta.headers.get("location");
+    if (!location) { console.log(`拿不到 ${art.name} 的下载地址（HTTP ${meta.status}）`); continue; }
     const zipRes = await fetch(location, { redirect: "follow" });
     const buf = Buffer.from(await zipRes.arrayBuffer());
     const out = `D:\\dsh\\02-临时\\gh-out\\${art.name}.zip`;
@@ -170,17 +209,16 @@ async function getArtifacts(login, runId) {
 
 const main = async () => {
   const me = await whoami();
-  console.log(`登录身份: ${me.login}  套餐: ${me.plan ?? "?"}`);
+  console.log(`登录身份: ${me.login}`);
 
   if (command === "setup") {
     await ensureRepo(me.login);
-    const sha = await uploadAll(me.login);
-    console.log("等 Actions 起来…");
-    await new Promise((r) => setTimeout(r, 15000));
+    const sha = await commitAll(me.login);
+    await dispatch(me.login);
+    await new Promise((r) => setTimeout(r, 8000));
     await watch(me.login, sha);
   } else if (command === "watch") {
-    const sha = process.argv[4] ?? null;
-    await watch(me.login, sha);
+    await watch(me.login, process.argv[4] ?? null);
   } else if (command === "get") {
     const saved = JSON.parse(fs.readFileSync("D:\\dsh\\02-临时\\last-run.json", "utf8"));
     await getArtifacts(me.login, saved.runId);
