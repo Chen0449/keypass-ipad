@@ -58,6 +58,7 @@ final class KeyboardViewController: UIInputViewController {
     private var planeHeightConstraint: NSLayoutConstraint!
     private var planeBottomConstraint: NSLayoutConstraint!
     private var candidateHeightConstraint: NSLayoutConstraint!
+    private var pageHostHeightConstraint: NSLayoutConstraint!
     private var titleRestoreWorkItem: DispatchWorkItem?
 
     // MARK: - 尺寸（照系统键盘的比例：行高固定，总高由行数算）
@@ -66,7 +67,8 @@ final class KeyboardViewController: UIInputViewController {
     /// 6 上内边距 + 4 行 + 3 个 8pt 间隙 + 6 下内边距
     private var planeHeight: CGFloat { 12 + 4 * rowHeight + 24 }
     private var candidateBarHeight: CGFloat { 40 }
-    private var editorFormHeight: CGFloat { 212 }
+    /// 编辑页：顶栏 38 + 表单 4×34 + 3×8 间隙 + 上下内边距
+    private var editorFormHeight: CGFloat { 220 }
 
     private var showsCandidates: Bool {
         page != .vault && chineseMode && !composer.isEmpty
@@ -134,12 +136,16 @@ final class KeyboardViewController: UIInputViewController {
         planeHeightConstraint.priority = UILayoutPriority(999)
         candidateHeightConstraint = candidateBar.heightAnchor.constraint(equalToConstant: 0)
         candidateHeightConstraint.priority = UILayoutPriority(999)
+        pageHostHeightConstraint = pageHost.heightAnchor.constraint(equalToConstant: 0)
+        // 999 而不是 1000：万一宿主硬塞一个更大的高度，让它让步而不是让约束冲突
+        pageHostHeightConstraint.priority = UILayoutPriority(999)
         planeBottomConstraint = planeView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: 0)
 
         NSLayoutConstraint.activate([
             heightConstraint,
             planeHeightConstraint,
             candidateHeightConstraint,
+            pageHostHeightConstraint,
             planeBottomConstraint,
 
             pageHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -155,16 +161,9 @@ final class KeyboardViewController: UIInputViewController {
             planeView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
 
-        for container in [vaultContainer, editorContainer] {
-            container.translatesAutoresizingMaskIntoConstraints = false
-            pageHost.addSubview(container)
-            NSLayoutConstraint.activate([
-                container.leadingAnchor.constraint(equalTo: pageHost.leadingAnchor),
-                container.trailingAnchor.constraint(equalTo: pageHost.trailingAnchor),
-                container.topAnchor.constraint(equalTo: pageHost.topAnchor),
-                container.bottomAnchor.constraint(equalTo: pageHost.bottomAnchor)
-            ])
-        }
+        // 密码库页 / 编辑页的容器**按需挂载**（见 attach/detach）。
+        // 常驻挂载会让隐藏页里的表单用 required 约束把 pageHost 撑到 200+pt，
+        // 把整块输入视图顶高、键位挤到屏幕外——之前三版的"空白带"就是这么来的。
 
         // 密码库页
         let backButton = makeBarButton(title: "⌨︎", action: #selector(backToKeys))
@@ -273,33 +272,36 @@ final class KeyboardViewController: UIInputViewController {
         guard let heightConstraint = heightConstraint,
               let planeHeightConstraint = planeHeightConstraint,
               let candidateHeightConstraint = candidateHeightConstraint,
+              let pageHostHeightConstraint = pageHostHeightConstraint,
               let planeBottomConstraint = planeBottomConstraint else { return }
 
         let candidatesHeight = showsCandidates ? candidateBarHeight : 0
-        let keyboardHeight = planeHeight + candidatesHeight
+        let planeValue: CGFloat = (page == .vault) ? 0 : planeHeight
 
-        let total: CGFloat
+        // 三段相加：内容区 + 候选条 + 键位，每个像素都归我们管
+        let hostHeight: CGFloat
         switch page {
         case .keys:
-            total = keyboardHeight
+            hostHeight = 0
         case .vault:
-            total = view.bounds.width > 620 ? 430 : 356
+            hostHeight = view.bounds.width > 620 ? 430 : 356
         case .editor:
-            total = keyboardHeight + editorFormHeight
+            hostHeight = editorFormHeight
         }
-
-        let planeValue = (page == .vault) ? 0 : planeHeight
+        let total = hostHeight + planeValue + candidatesHeight
         let bottomInset = -max(view.safeAreaInsets.bottom, 0)
 
         let changed = abs(heightConstraint.constant - total) > 0.5
             || abs(planeHeightConstraint.constant - planeValue) > 0.5
             || abs(candidateHeightConstraint.constant - candidatesHeight) > 0.5
+            || abs(pageHostHeightConstraint.constant - hostHeight) > 0.5
             || abs(planeBottomConstraint.constant - bottomInset) > 0.5
         guard changed else { return }
 
         heightConstraint.constant = total
         planeHeightConstraint.constant = planeValue
         candidateHeightConstraint.constant = candidatesHeight
+        pageHostHeightConstraint.constant = hostHeight
         planeBottomConstraint.constant = bottomInset
 
         if animated {
@@ -307,6 +309,23 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             view.setNeedsLayout()
         }
+    }
+
+    private func attach(_ container: UIView) {
+        guard container.superview == nil else { return }
+        container.translatesAutoresizingMaskIntoConstraints = false
+        pageHost.addSubview(container)
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: pageHost.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: pageHost.trailingAnchor),
+            container.topAnchor.constraint(equalTo: pageHost.topAnchor),
+            container.bottomAnchor.constraint(equalTo: pageHost.bottomAnchor)
+        ])
+    }
+
+    private func detach(_ container: UIView) {
+        guard container.superview != nil else { return }
+        container.removeFromSuperview()
     }
 
     // MARK: - 备份菜单（剪贴板要「允许完全访问」）
@@ -414,6 +433,18 @@ final class KeyboardViewController: UIInputViewController {
         candidateBar.isHidden = !showsCandidates
         vaultContainer.isHidden = page != .vault
         editorContainer.isHidden = page != .editor
+
+        switch page {
+        case .vault:
+            detach(editorContainer)
+            attach(vaultContainer)
+        case .editor:
+            detach(vaultContainer)
+            attach(editorContainer)
+        case .keys:
+            detach(vaultContainer)
+            detach(editorContainer)
+        }
 
         if page == .vault {
             composer = ""
