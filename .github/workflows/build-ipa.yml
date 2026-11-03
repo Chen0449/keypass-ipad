@@ -7,7 +7,8 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14 自带 Xcode 15.4，读不了新版 xcodegen 写出的 objectVersion 77（Xcode 16 格式）
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,15 +17,19 @@ jobs:
         run: |
           xcodebuild -version
           sw_vers
+          ls -d /Applications/Xcode*.app || true
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          brew install xcodegen
+          xcodegen --version
 
       - name: Generate project
         run: |
-          xcodegen generate
-          echo "--- 生成的 scheme ---"
-          xcodebuild -list -project KeyPass.xcodeproj
+          set -o pipefail
+          xcodegen generate 2>&1 | tee generate.log
+          echo "--- 生成的 scheme ---" 2>&1 | tee -a generate.log
+          xcodebuild -list -project KeyPass.xcodeproj 2>&1 | tee -a generate.log
 
       - name: Build (no code signing)
         run: |
@@ -46,7 +51,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            generate.log
           if-no-files-found: warn
 
       - name: Package Payload
