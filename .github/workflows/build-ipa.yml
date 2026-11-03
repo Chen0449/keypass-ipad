@@ -1,0 +1,71 @@
+name: build-unsigned-ipa
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: |
+          xcodegen generate
+          echo "--- 生成的 scheme ---"
+          xcodebuild -list -project KeyPass.xcodeproj
+
+      - name: Build (no code signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project KeyPass.xcodeproj \
+            -scheme KeyPassHost \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
+
+      - name: Package Payload
+        if: success()
+        run: |
+          set -e
+          APP_PATH="build/Build/Products/Release-iphoneos/KeyPassHost.app"
+          test -d "$APP_PATH" || { echo "找不到 $APP_PATH"; ls -R build/Build/Products || true; exit 1; }
+          test -d "$APP_PATH/PlugIns/KeyPassKeyboard.appex" || { echo "扩展没进 PlugIns"; ls -R "$APP_PATH" || true; exit 1; }
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP_PATH" out/Payload/
+          cd out
+          zip -qry KeyPass-unsigned.ipa Payload
+          ls -lh KeyPass-unsigned.ipa
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeyPass-unsigned-ipa
+          path: out/KeyPass-unsigned.ipa
+          if-no-files-found: error
