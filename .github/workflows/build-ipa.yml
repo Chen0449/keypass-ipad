@@ -6,8 +6,9 @@ on:
 
 jobs:
   build:
-    # macos-14 自带 Xcode 15.4，读不了新版 xcodegen 写出的 objectVersion 77（Xcode 16 格式）
-    runs-on: macos-15
+    # macos-15 排队太久（实测 8 分钟没分到机器），改用 macos-14 + 下面把工程格式降级
+    # 想省掉降级那步就把这里换回 macos-15（它自带 Xcode 16，认 objectVersion 77）
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,6 +28,12 @@ jobs:
         run: |
           set -o pipefail
           xcodegen generate 2>&1 | tee generate.log
+          # 新版 xcodegen 写 objectVersion 77（Xcode 16 格式），Xcode 15.4 读不了 → 降到 56
+          PBX=KeyPass.xcodeproj/project.pbxproj
+          if grep -q 'objectVersion = 77' "$PBX"; then
+            sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' "$PBX"
+            echo "objectVersion 77 -> 56" | tee -a generate.log
+          fi
           echo "--- 生成的 scheme ---" 2>&1 | tee -a generate.log
           xcodebuild -list -project KeyPass.xcodeproj 2>&1 | tee -a generate.log
 
