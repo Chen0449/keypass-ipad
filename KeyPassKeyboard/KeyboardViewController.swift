@@ -68,7 +68,7 @@ final class KeyboardViewController: UIInputViewController {
     private var planeHeight: CGFloat { 12 + 4 * rowHeight + 24 }
     private var candidateBarHeight: CGFloat { 40 }
     /// 编辑页：顶栏 38 + 表单 4×34 + 3×8 间隙 + 上下内边距
-    private var editorFormHeight: CGFloat { 220 }
+    private var editorFormHeight: CGFloat { 226 }
 
     private var showsCandidates: Bool {
         page != .vault && chineseMode && !composer.isEmpty
@@ -166,7 +166,7 @@ final class KeyboardViewController: UIInputViewController {
         // 把整块输入视图顶高、键位挤到屏幕外——之前三版的"空白带"就是这么来的。
 
         // 密码库页
-        let backButton = makeBarButton(title: "⌨︎", action: #selector(backToKeys))
+        let backButton = makeBarButton(title: "‹ 返回", action: #selector(backToKeys))
         let addButton = makeBarButton(title: "＋", action: #selector(addEntry))
         let backupButton = makeBarButton(title: "⋯", action: nil)
         backupButton.menu = makeBackupMenu()
@@ -179,6 +179,12 @@ final class KeyboardViewController: UIInputViewController {
         vaultContainer.addSubview(vaultBar)
         vaultView.translatesAutoresizingMaskIntoConstraints = false
         vaultContainer.addSubview(vaultView)
+
+        // 兜底出口：密码库页没有键位面板，万一顶栏被系统裁掉，往下滑也能回打字页
+        let swipeBack = UISwipeGestureRecognizer(target: self, action: #selector(backToKeys))
+        swipeBack.direction = .down
+        vaultBar.isUserInteractionEnabled = true
+        vaultBar.addGestureRecognizer(swipeBack)
         NSLayoutConstraint.activate([
             vaultBar.topAnchor.constraint(equalTo: vaultContainer.topAnchor),
             vaultBar.leadingAnchor.constraint(equalTo: vaultContainer.leadingAnchor),
@@ -229,7 +235,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.addSubview(titleLabel)
 
         var constraints: [NSLayoutConstraint] = [
-            bar.heightAnchor.constraint(equalToConstant: 38),
+            bar.heightAnchor.constraint(equalToConstant: 44),
             leftButton.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             leftButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             titleLabel.centerXAnchor.constraint(equalTo: bar.centerXAnchor),
@@ -687,3 +693,4 @@ final class KeyboardViewController: UIInputViewController {
         page = .vault
     }
 }
+
