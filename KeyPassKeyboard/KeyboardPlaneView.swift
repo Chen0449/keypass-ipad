@@ -58,9 +58,10 @@ final class KeyboardPlaneView: UIView {
         guard !rows.isEmpty, rows.count == buttons.count else { return }
 
         let padX: CGFloat = 6
-        // 底部要给 iPad 的手势条留位置，否则最后一行按键会被压到屏幕边缘外
+        // 底部手势条的安全区由控制器在约束里让出来，这里保持对称内边距，
+        // 这样每行高度就能稳稳等于控制器算好的目标行高
         let padTop: CGFloat = 6
-        let padBottom: CGFloat = 6 + max(safeAreaInsets.bottom, 0)
+        let padBottom: CGFloat = 6
         let gapX: CGFloat = 6
         let gapY: CGFloat = 8
 

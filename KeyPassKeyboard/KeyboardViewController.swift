@@ -2,14 +2,15 @@ import UIKit
 
 /// 键盘扩展主控制器。
 ///
-/// 布局（Codex 审查 2026-11-04 修正）：
+/// 布局（行高固定，总高由内容算出来，不留空白）：
 ///
 ///     view
-///     ├── pageHost        ← 上半部分：密码库页 / 编辑页的内容
-///     └── planeView       ← 键盘面板，**打字页和编辑页共用同一块**
+///     ├── pageHost      ← 密码库页 / 编辑页的内容
+///     ├── candidateBar  ← 拼音候选条（只在拼写中显示）
+///     └── planeView     ← 键位面板（打字页 / 编辑页共用）
 ///
-/// 之前把键盘面板塞在 keysContainer 里，进编辑页一隐藏容器键盘就没了，编辑页根本没法输入。
-/// 现在面板独立在底部，`pageHost` 占剩下的高度；进密码库页时把面板高度压到 0。
+/// 中文：内置全拼引擎（`PinyinEngine`）。字母先进 composer，候选条出词，
+/// 点词 / 空格 / 换行上屏。底行「中/英」切本键盘的中英模式，「🌐」切到系统键盘。
 final class KeyboardViewController: UIInputViewController {
 
     private enum Page {
@@ -18,26 +19,34 @@ final class KeyboardViewController: UIInputViewController {
         case editor
     }
 
-    private struct PageMetrics {
-        let total: CGFloat
-        let plane: CGFloat
+    private enum PersistKey {
+        static let page = "kp.page"
+        static let draft = "kp.draft"
+        static let editing = "kp.editing"
+        static let chinese = "kp.chinese"
     }
 
     private let store = VaultStore.shared
+    private let pinyin = PinyinEngine.shared
+
     private var items: [Credential] = []
     private var editingID: UUID?
 
     private var page: Page = .keys {
-        didSet { applyPage(animated: true) }
+        didSet { applyPage() }
     }
 
     private var planePage: KeyboardPage = .letters
     private var shiftOn = false
 
+    private var chineseMode = true
+    private var composer = ""
+
     private let pageHost = UIView()
     private let vaultContainer = UIView()
     private let editorContainer = UIView()
 
+    private let candidateBar = CandidateBarView()
     private let planeView = KeyboardPlaneView()
     private let vaultView = VaultListView()
     private let editorView = EditorView()
@@ -47,18 +56,20 @@ final class KeyboardViewController: UIInputViewController {
 
     private var heightConstraint: NSLayoutConstraint!
     private var planeHeightConstraint: NSLayoutConstraint!
-    /// 打字页专用：把面板顶到 view 顶部，让它在系统给多高时都铺满（避免顶部露出一大块空白）
-    private var planeTopConstraint: NSLayoutConstraint!
+    private var planeBottomConstraint: NSLayoutConstraint!
+    private var candidateHeightConstraint: NSLayoutConstraint!
     private var titleRestoreWorkItem: DispatchWorkItem?
 
-    /// 临时诊断用：打字页左上角显示实测尺寸，量准了就把这块删掉
-    private let sizeLabel = UILabel()
+    // MARK: - 尺寸（照系统键盘的比例：行高固定，总高由行数算）
 
-    // 切到系统键盘（打中文）时扩展会被系统卸载，回来要能接着刚才的页面和草稿
-    private enum PersistKey {
-        static let page = "kp.page"
-        static let draft = "kp.draft"
-        static let editing = "kp.editing"
+    private var rowHeight: CGFloat { view.bounds.width > 620 ? 50 : 44 }
+    /// 6 上内边距 + 4 行 + 3 个 8pt 间隙 + 6 下内边距
+    private var planeHeight: CGFloat { 12 + 4 * rowHeight + 24 }
+    private var candidateBarHeight: CGFloat { 40 }
+    private var editorFormHeight: CGFloat { 212 }
+
+    private var showsCandidates: Bool {
+        page != .vault && chineseMode && !composer.isEmpty
     }
 
     // MARK: - 生命周期
@@ -72,6 +83,10 @@ final class KeyboardViewController: UIInputViewController {
                 : UIColor(red: 0.82, green: 0.84, blue: 0.87, alpha: 1)
         }
 
+        if let saved = UserDefaults.standard.object(forKey: PersistKey.chinese) as? Bool {
+            chineseMode = saved
+        }
+
         buildLayout()
         bindActions()
         reloadVault()
@@ -80,9 +95,9 @@ final class KeyboardViewController: UIInputViewController {
         shiftOn = false
         planeView.render(page: planePage, shift: shiftOn)
 
-        applyPage(animated: false)
-        updateHeight(animated: false)
+        // 先恢复上次的页面，再应用布局 —— 顺序反了会把刚恢复的页面覆盖成「打字页」
         restoreState()
+        applyPage()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -92,86 +107,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
-        updateHeight(animated: false)
-        sizeLabel.text = "\(Int(view.bounds.width))×\(Int(view.bounds.height)) 面板\(Int(planeView.bounds.height))"
-    }
-
-    // MARK: - 页面 / 草稿 的续接（切到系统键盘再切回来不丢东西）
-
-    private func saveState() {
-        let defaults = UserDefaults.standard
-        switch page {
-        case .keys:
-            defaults.set("keys", forKey: PersistKey.page)
-            defaults.removeObject(forKey: PersistKey.draft)
-            defaults.removeObject(forKey: PersistKey.editing)
-        case .vault:
-            defaults.set("vault", forKey: PersistKey.page)
-            defaults.removeObject(forKey: PersistKey.draft)
-            defaults.removeObject(forKey: PersistKey.editing)
-        case .editor:
-            defaults.set("editor", forKey: PersistKey.page)
-            if let data = try? JSONEncoder().encode(editorView.currentDraft()) {
-                defaults.set(data, forKey: PersistKey.draft)
-            }
-            defaults.set(editingID?.uuidString, forKey: PersistKey.editing)
-        }
-    }
-
-    private func restoreState() {
-        let defaults = UserDefaults.standard
-        let saved = defaults.string(forKey: PersistKey.page) ?? "keys"
-
-        if saved == "editor",
-           let data = defaults.data(forKey: PersistKey.draft),
-           let draft = try? JSONDecoder().decode(Credential.self, from: data) {
-            if let raw = defaults.string(forKey: PersistKey.editing), let id = UUID(uuidString: raw) {
-                editingID = id
-                editorTitleLabel.text = "编辑条目"
-            } else {
-                editingID = nil
-                editorTitleLabel.text = "新建条目"
-            }
-            editorView.load(draft)
-            page = .editor
-        } else if saved == "vault" {
-            reloadVault()
-            page = .vault
-        }
-    }
-
-    // MARK: - 高度
-
-    private var metrics: PageMetrics {
-        let isWide = view.bounds.width > 620
-        switch page {
-        case .keys:
-            let total: CGFloat = isWide ? 336 : 268
-            return PageMetrics(total: total, plane: total)
-        case .vault:
-            return PageMetrics(total: isWide ? 430 : 356, plane: 0)
-        case .editor:
-            return PageMetrics(total: isWide ? 448 : 396, plane: isWide ? 176 : 168)
-        }
-    }
-
-    private func updateHeight(animated: Bool) {
-        guard let heightConstraint = heightConstraint, let planeHeightConstraint = planeHeightConstraint else { return }
-        let target = metrics
-        let heightChanged = abs(heightConstraint.constant - target.total) > 0.5
-        let planeChanged = abs(planeHeightConstraint.constant - target.plane) > 0.5
-        guard heightChanged || planeChanged else { return }
-
-        heightConstraint.constant = target.total
-        planeHeightConstraint.constant = target.plane
-
-        if animated {
-            UIView.animate(withDuration: 0.15) {
-                self.view.layoutIfNeeded()
-            }
-        } else {
-            view.setNeedsLayout()
-        }
+        applyLayout(animated: false)
     }
 
     // MARK: - 布局
@@ -181,28 +117,37 @@ final class KeyboardViewController: UIInputViewController {
         pageHost.clipsToBounds = true
         view.addSubview(pageHost)
 
+        candidateBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(candidateBar)
+
         planeView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(planeView)
 
-        heightConstraint = view.heightAnchor.constraint(equalToConstant: 268)
+        heightConstraint = view.heightAnchor.constraint(equalToConstant: 252)
         heightConstraint.priority = UILayoutPriority(999)
-        planeHeightConstraint = planeView.heightAnchor.constraint(equalToConstant: 268)
+        planeHeightConstraint = planeView.heightAnchor.constraint(equalToConstant: 212)
         planeHeightConstraint.priority = UILayoutPriority(999)
-        planeTopConstraint = planeView.topAnchor.constraint(equalTo: view.topAnchor)
-        planeTopConstraint.priority = UILayoutPriority(998)
+        candidateHeightConstraint = candidateBar.heightAnchor.constraint(equalToConstant: 0)
+        candidateHeightConstraint.priority = UILayoutPriority(999)
+        planeBottomConstraint = planeView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: 0)
 
         NSLayoutConstraint.activate([
             heightConstraint,
             planeHeightConstraint,
+            candidateHeightConstraint,
+            planeBottomConstraint,
 
             pageHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             pageHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             pageHost.topAnchor.constraint(equalTo: view.topAnchor),
-            pageHost.bottomAnchor.constraint(equalTo: planeView.topAnchor),
+            pageHost.bottomAnchor.constraint(equalTo: candidateBar.topAnchor),
+
+            candidateBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            candidateBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            candidateBar.bottomAnchor.constraint(equalTo: planeView.topAnchor),
 
             planeView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            planeView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            planeView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            planeView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
 
         for container in [vaultContainer, editorContainer] {
@@ -216,18 +161,7 @@ final class KeyboardViewController: UIInputViewController {
             ])
         }
 
-        // 临时诊断标签（量准尺寸后删除）
-        sizeLabel.font = .systemFont(ofSize: 9)
-        sizeLabel.textColor = UIColor.secondaryLabel.withAlphaComponent(0.75)
-        sizeLabel.isUserInteractionEnabled = false
-        sizeLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(sizeLabel)
-        NSLayoutConstraint.activate([
-            sizeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
-            sizeLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 2)
-        ])
-
-        // 密码库页：顶栏 + 列表
+        // 密码库页
         let backButton = makeBarButton(title: "⌨︎", action: #selector(backToKeys))
         let addButton = makeBarButton(title: "＋", action: #selector(addEntry))
         let backupButton = makeBarButton(title: "⋯", action: nil)
@@ -251,7 +185,7 @@ final class KeyboardViewController: UIInputViewController {
             vaultView.bottomAnchor.constraint(equalTo: vaultContainer.bottomAnchor)
         ])
 
-        // 编辑页：顶栏 + 表单（表单文字由下面那块共用键盘输入）
+        // 编辑页
         let cancelButton = makeBarButton(title: "取消", action: #selector(cancelEdit))
         let saveButton = makeBarButton(title: "保存", action: #selector(saveEntry))
         let editorBar = makeBar(titleLabel: editorTitleLabel,
@@ -330,6 +264,46 @@ final class KeyboardViewController: UIInputViewController {
         return button
     }
 
+    private func applyLayout(animated: Bool) {
+        guard let heightConstraint = heightConstraint,
+              let planeHeightConstraint = planeHeightConstraint,
+              let candidateHeightConstraint = candidateHeightConstraint,
+              let planeBottomConstraint = planeBottomConstraint else { return }
+
+        let candidatesHeight = showsCandidates ? candidateBarHeight : 0
+        let keyboardHeight = planeHeight + candidatesHeight
+
+        let total: CGFloat
+        switch page {
+        case .keys:
+            total = keyboardHeight
+        case .vault:
+            total = view.bounds.width > 620 ? 430 : 356
+        case .editor:
+            total = keyboardHeight + editorFormHeight
+        }
+
+        let planeValue = (page == .vault) ? 0 : planeHeight
+        let bottomInset = -max(view.safeAreaInsets.bottom, 0)
+
+        let changed = abs(heightConstraint.constant - total) > 0.5
+            || abs(planeHeightConstraint.constant - planeValue) > 0.5
+            || abs(candidateHeightConstraint.constant - candidatesHeight) > 0.5
+            || abs(planeBottomConstraint.constant - bottomInset) > 0.5
+        guard changed else { return }
+
+        heightConstraint.constant = total
+        planeHeightConstraint.constant = planeValue
+        candidateHeightConstraint.constant = candidatesHeight
+        planeBottomConstraint.constant = bottomInset
+
+        if animated {
+            UIView.animate(withDuration: 0.15) { self.view.layoutIfNeeded() }
+        } else {
+            view.setNeedsLayout()
+        }
+    }
+
     // MARK: - 备份菜单（剪贴板要「允许完全访问」）
 
     private func makeBackupMenu() -> UIMenu {
@@ -370,8 +344,6 @@ final class KeyboardViewController: UIInputViewController {
         showTemporaryTitle("导入：新增 \(result.added) · 覆盖 \(result.updated)")
     }
 
-    // MARK: - 标题提示（到期后重新算，不用旧字符串覆盖）
-
     private var normalVaultTitle: String {
         items.isEmpty ? "密码库" : "密码库（\(items.count)）"
     }
@@ -392,6 +364,9 @@ final class KeyboardViewController: UIInputViewController {
     private func bindActions() {
         planeView.onAction = { [weak self] action in
             self?.handle(action)
+        }
+        candidateBar.onPick = { [weak self] word in
+            self?.commit(word)
         }
 
         vaultView.onFillUsername = { [weak self] item in
@@ -426,24 +401,22 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    // MARK: - 页面切换
+    // MARK: - 页面
 
-    private func applyPage(animated: Bool) {
+    private func applyPage() {
         pageHost.isHidden = page == .keys
         planeView.isHidden = page == .vault
+        candidateBar.isHidden = !showsCandidates
         vaultContainer.isHidden = page != .vault
         editorContainer.isHidden = page != .editor
 
-        // 打字页：面板顶到顶部铺满整块输入视图（系统给多高就吃多高，
-        // 否则 iPad 上系统给的高度比我们请求的大，顶上会露出一条空白背景）
-        let fillPlane = page == .keys
-        planeTopConstraint.isActive = fillPlane
-        planeHeightConstraint.isActive = !fillPlane
-
-        if page != .vault {
-            planeView.render(page: planePage, shift: shiftOn)
+        if page == .vault {
+            composer = ""
+            candidateBar.update([])
         }
-        updateHeight(animated: animated)
+
+        planeView.render(page: planePage, shift: shiftOn)
+        applyLayout(animated: true)
         saveState()
     }
 
@@ -453,25 +426,86 @@ final class KeyboardViewController: UIInputViewController {
         vaultTitleLabel.text = normalVaultTitle
     }
 
-    // MARK: - 按键处理
+    // MARK: - 中文输入
+
+    private func refreshCandidates() {
+        if chineseMode, !composer.isEmpty {
+            candidateBar.update(pinyin.candidates(for: composer))
+        } else {
+            candidateBar.update([])
+        }
+        candidateBar.isHidden = !showsCandidates
+        applyLayout(animated: false)
+    }
+
+    private func commit(_ word: String) {
+        guard !word.isEmpty else { return }
+        type(word)
+        composer = ""
+        candidateBar.update([])
+        candidateBar.isHidden = true
+        applyLayout(animated: false)
+    }
+
+    private func commitCurrent() {
+        if let word = pinyin.firstCandidate(for: composer) {
+            commit(word)
+            return
+        }
+        // 拼音不成立（比如就想打英文），原样上屏
+        let raw = composer
+        composer = ""
+        candidateBar.update([])
+        candidateBar.isHidden = true
+        type(raw)
+        applyLayout(animated: false)
+    }
+
+    private func toggleChinese() {
+        chineseMode.toggle()
+        UserDefaults.standard.set(chineseMode, forKey: PersistKey.chinese)
+        if !chineseMode, !composer.isEmpty {
+            commitCurrent()
+        }
+        refreshCandidates()
+    }
+
+    // MARK: - 按键
 
     private func handle(_ action: KeyAction) {
         switch action {
-        case .text(let text):
-            type(text)
-            if shiftOn, page != .vault, text.count == 1, text.first?.isLetter == true {
-                shiftOn = false
-                planeView.render(page: planePage, shift: shiftOn)
+        case .text(let raw):
+            let isLetter = raw.count == 1 && (raw.first?.isASCII ?? false) && (raw.first?.isLetter ?? false)
+            if chineseMode, isLetter, page != .vault {
+                composer.append(contentsOf: raw.lowercased())
+                refreshCandidates()
+            } else {
+                type(raw)
+                if shiftOn, isLetter {
+                    shiftOn = false
+                    planeView.render(page: planePage, shift: shiftOn)
+                }
             }
         case .shift:
             shiftOn.toggle()
             planeView.render(page: planePage, shift: shiftOn)
         case .backspace:
-            backspace()
+            if !composer.isEmpty {
+                composer.removeLast()
+                refreshCandidates()
+            } else {
+                backspace()
+            }
         case .space:
-            type(" ")
+            if composer.isEmpty {
+                type(" ")
+            } else {
+                commitCurrent()
+            }
         case .newline:
-            if page == .editor {
+            if !composer.isEmpty {
+                commitCurrent()
+            } else if page == .editor {
                 editorView.focusNext()
             } else {
                 type("\n")
@@ -490,6 +524,8 @@ final class KeyboardViewController: UIInputViewController {
             planeView.render(page: planePage, shift: shiftOn)
         case .nextInputMode:
             advanceToNextInputMode()
+        case .toggleChinese:
+            toggleChinese()
         case .toggleVault:
             if page == .vault {
                 page = .keys
@@ -499,7 +535,6 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
 
-        // 编辑页每敲一下就把草稿存起来：切到系统键盘打中文时扩展会被卸载，回来能接着编辑
         if page == .editor {
             saveState()
         }
@@ -524,6 +559,50 @@ final class KeyboardViewController: UIInputViewController {
     private func insert(_ text: String) {
         guard !text.isEmpty else { return }
         textDocumentProxy.insertText(text)
+    }
+
+    // MARK: - 状态续接（切到系统键盘时扩展会被卸载）
+
+    private func saveState() {
+        let defaults = UserDefaults.standard
+        switch page {
+        case .keys:
+            defaults.set("keys", forKey: PersistKey.page)
+            defaults.removeObject(forKey: PersistKey.draft)
+            defaults.removeObject(forKey: PersistKey.editing)
+        case .vault:
+            defaults.set("vault", forKey: PersistKey.page)
+            defaults.removeObject(forKey: PersistKey.draft)
+            defaults.removeObject(forKey: PersistKey.editing)
+        case .editor:
+            defaults.set("editor", forKey: PersistKey.page)
+            if let data = try? JSONEncoder().encode(editorView.currentDraft()) {
+                defaults.set(data, forKey: PersistKey.draft)
+            }
+            defaults.set(editingID?.uuidString, forKey: PersistKey.editing)
+        }
+    }
+
+    private func restoreState() {
+        let defaults = UserDefaults.standard
+        let saved = defaults.string(forKey: PersistKey.page) ?? "keys"
+
+        if saved == "editor",
+           let data = defaults.data(forKey: PersistKey.draft),
+           let draft = try? JSONDecoder().decode(Credential.self, from: data) {
+            if let raw = defaults.string(forKey: PersistKey.editing), let id = UUID(uuidString: raw) {
+                editingID = id
+                editorTitleLabel.text = "编辑条目"
+            } else {
+                editingID = nil
+                editorTitleLabel.text = "新建条目"
+            }
+            editorView.load(draft)
+            page = .editor
+        } else if saved == "vault" {
+            reloadVault()
+            page = .vault
+        }
     }
 
     // MARK: - 动作
@@ -558,7 +637,6 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         guard succeeded else {
-            // 落盘失败就别假装保存成功、别退出编辑页
             editorTitleLabel.text = "保存失败：\(store.problem ?? "磁盘写入失败")"
             return
         }

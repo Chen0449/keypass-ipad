@@ -11,6 +11,7 @@ enum KeyAction: Equatable {
     case numbers
     case symbols
     case nextInputMode
+    case toggleChinese
     case toggleVault
 }
 
@@ -130,12 +131,13 @@ enum KeyboardLayouts {
 
     private static func bottomRow(switchTitle: String, switchAction: KeyAction) -> [KeyDef] {
         [
-            KeyDef(title: switchTitle, weight: 1.3, style: .special, action: switchAction),
-            KeyDef(title: "🔑 密码库", weight: 2.1, style: .accent, action: .toggleVault),
-            KeyDef(title: "空格", weight: 4.0, style: .normal, action: .space),
-            // 明确写「中/英」而不是 🌐 图标：点一下切到系统键盘（系统中文拼音），再点切回来
-            KeyDef(title: "中/英", weight: 1.5, style: .special, action: .nextInputMode),
-            KeyDef(title: "换行", weight: 1.7, style: .special, action: .newline)
+            KeyDef(title: switchTitle, weight: 1.2, style: .special, action: switchAction),
+            KeyDef(title: "🔑 密码库", weight: 1.9, style: .accent, action: .toggleVault),
+            KeyDef(title: "空格", weight: 3.2, style: .normal, action: .space),
+            // 中/英：切本键盘自己的中英模式（内置拼音）；🌐：切到系统键盘
+            KeyDef(title: "中/英", weight: 1.5, style: .special, action: .toggleChinese),
+            KeyDef(title: "🌐", weight: 1.0, style: .special, action: .nextInputMode),
+            KeyDef(title: "换行", weight: 1.5, style: .special, action: .newline)
         ]
     }
 }
